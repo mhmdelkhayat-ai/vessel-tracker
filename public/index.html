@@ -1,25 +1,318 @@
-const CACHE = 'fvt-v4';
-const SHELL = ['./index.html', './manifest.json'];
-
-self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
-});
-
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-  const url = new URL(e.request.url);
-  if (url.origin === location.origin) {
-    e.respondWith(
-      fetch(e.request)
-        .then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r; })
-        .catch(() => caches.match(e.request))
-    );
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Ford Naghi Vessel Tracker</title>
+<meta name="theme-color" content="#0b1f3f">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="https://logos-world.net/wp-content/uploads/2021/05/Ford-Logo.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Vessel Tracker">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --navy:#0b1f3f; --navy2:#132c54; --ford:#1351d8; --ford-dark:#0c3ba5;
+    --bg:#f2f4f8; --card:#ffffff; --line:#dde3ec; --text:#1c2536; --muted:#68738a;
+    --green:#0f7a52; --green-bg:#e2f4ec; --amber:#8a5a0a; --amber-bg:#faeeda; --red:#a32d2d; --red-bg:#fcebeb;
   }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{background:var(--navy);color:#fff;display:flex;align-items:center;gap:14px;padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top))}
+  header img{height:34px;width:auto;background:#fff;border-radius:6px;padding:3px 8px}
+  header .titles{line-height:1.25}
+  header h1{font-size:16px;font-weight:600;letter-spacing:.2px}
+  header .sub{font-size:11px;color:#aebcd6}
+  .conn{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11px;color:#aebcd6;white-space:nowrap}
+  .dot{width:9px;height:9px;border-radius:50%;background:#8a93a6}
+  .dot.live{background:#35d08a;box-shadow:0 0 0 3px rgba(53,208,138,.25)}
+  .dot.err{background:#e24b4a}
+  .layout{display:flex;height:calc(100dvh - 55px - env(safe-area-inset-top))}
+  .panel{width:390px;min-width:320px;background:var(--card);border-right:1px solid var(--line);overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column}
+  #map{flex:1;min-height:200px;background:#dce3ee}
+  .stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+  .stat{background:var(--bg);border-radius:8px;padding:10px 6px;text-align:center}
+  .stat b{display:block;font-size:18px;font-weight:600;color:var(--navy)}
+  .stat span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .fleet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .fleet-head h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .refresh{background:none;border:none;color:var(--ford);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;font-family:inherit;padding:4px 6px;border-radius:6px}
+  .refresh:hover{background:#eef3fd}
+  .msg{padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:12px;line-height:1.55;display:none}
+  .msg.show{display:block}
+  .msg.ok{background:var(--green-bg);color:var(--green)}
+  .msg.bad{background:var(--red-bg);color:var(--red)}
+  .vlist{display:flex;flex-direction:column;gap:9px}
+  .vcard{border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:#fff;transition:box-shadow .15s}
+  .vcard.live{border-left:4px solid var(--green);cursor:pointer}
+  .vcard.live:hover{box-shadow:0 2px 10px rgba(11,31,63,.10)}
+  .vcard .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .vname{font-size:13px;font-weight:600}
+  .badge{font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap}
+  .b-live{background:var(--green-bg);color:var(--green)}
+  .b-wait{background:var(--amber-bg);color:var(--amber)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;margin-top:8px;font-size:11px;color:var(--muted)}
+  .grid b{color:var(--text);font-weight:600}
+  .upd{font-size:10px;color:var(--muted);margin-top:7px}
+  .addrow{display:flex;gap:8px;margin-top:14px}
+  .addrow input{flex:1;padding:10px 11px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit;color:var(--text)}
+  .addrow input:focus{outline:none;border-color:var(--ford);box-shadow:0 0 0 3px rgba(19,81,216,.12)}
+  .addrow button{padding:10px 16px;background:var(--ford);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+  .addrow button:hover{background:var(--ford-dark)}
+  footer.creds{margin-top:auto;padding-top:14px;font-size:10px;color:var(--muted);text-align:center}
+  .ship-icon{display:flex;align-items:center;justify-content:center}
+  .ship-icon div{width:26px;height:26px;border-radius:50%;background:var(--ford);color:#fff;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:13px}
+  @media (max-width:760px){
+    .layout{flex-direction:column}
+    .panel{width:100%;min-width:0;max-height:55dvh;order:2;border-right:none;border-top:1px solid var(--line)}
+    #map{order:1;height:45dvh;flex:none}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <img src="https://logos-world.net/wp-content/uploads/2021/05/Ford-Logo.png" alt="Ford">
+  <div class="titles">
+    <h1>Ford Naghi Vessel Tracker</h1>
+    <div class="sub">MYNM Sales Operations · Live AIS</div>
+  </div>
+  <div class="conn"><span class="dot" id="connDot"></span><span id="connText">Starting...</span></div>
+</header>
+
+<div class="layout">
+  <div class="panel">
+    <div class="stats">
+      <div class="stat"><b id="stTargets">0</b><span>Vessels</span></div>
+      <div class="stat"><b id="stLive">0</b><span>Live</span></div>
+      <div class="stat"><b id="stMsgs">0</b><span>Signals</span></div>
+    </div>
+
+    <div class="msg" id="msg"></div>
+
+    <div class="fleet-head">
+      <h2>Inbound fleet</h2>
+      <button class="refresh" onclick="poll(true)" title="Refresh now">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        Refresh
+      </button>
+    </div>
+
+    <div class="vlist" id="vlist">
+      <div style="font-size:12px;color:var(--muted)">Loading fleet...</div>
+    </div>
+
+    <div class="addrow">
+      <input type="text" id="addName" placeholder="Track an extra vessel by name" onkeydown="if(event.key==='Enter')addVessel()">
+      <button onclick="addVessel()">Add</button>
+    </div>
+
+    <footer class="creds">Fleet list: MYNM arrivals sheet · Positions: aisstream.io · Nothing is stored</footer>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const JEDDAH={lat:21.47,lon:39.17}, BAB={lat:12.6,lon:43.4}, SUEZ={lat:29.9,lon:32.55}, GIB={lat:35.95,lon:-5.6};
+let map, fleet=[], markers={};
+
+function haversineNm(a,b){
+  const R=3440.065,toR=Math.PI/180;
+  const dLat=(b.lat-a.lat)*toR,dLon=(b.lon-a.lon)*toR;
+  const h=Math.sin(dLat/2)**2+Math.cos(a.lat*toR)*Math.cos(b.lat*toR)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function routedNm(p){
+  if(p.lat>=12&&p.lat<=30.5&&p.lon>=32&&p.lon<=44) return haversineNm(p,JEDDAH);
+  if(p.lat>=30&&p.lat<=46&&p.lon>=-6&&p.lon<=36) return haversineNm(p,SUEZ)+haversineNm(SUEZ,JEDDAH);
+  if(p.lon<-6) return haversineNm(p,GIB)+haversineNm(GIB,SUEZ)+haversineNm(SUEZ,JEDDAH);
+  return haversineNm(p,BAB)+haversineNm(BAB,JEDDAH);
+}
+function regionName(lat,lon){
+  if(lat>=29.5&&lat<=31.5&&lon>=32&&lon<=33.5) return 'Suez Canal';
+  if(lat>=12&&lat<=30.5&&lon>=32&&lon<=44) return 'Red Sea';
+  if(lat>=10&&lat<=16&&lon>=44&&lon<=52) return 'Gulf of Aden';
+  if(lat>=30&&lat<=46&&lon>=-6&&lon<=36) return 'Mediterranean';
+  if(lat>=0&&lat<=26&&lon>=52&&lon<=76) return 'Arabian Sea';
+  if(lat>=-1&&lat<=7&&lon>=95&&lon<=105) return 'Malacca Strait';
+  if(lat>=0&&lat<=25&&lon>=105&&lon<=122) return 'South China Sea';
+  if(lat>=22&&lat<=42&&lon>=117&&lon<=136) return 'China coastal waters';
+  if(lat>=-40&&lat<=10&&lon>=20&&lon<=100) return 'Indian Ocean';
+  if(lat>=-40&&lat<=5&&lon>=10&&lon<=20) return 'Southern African waters';
+  if(lat>=24&&lat<=46&&lon>=-82&&lon<=-64) return 'US East Coast';
+  if(lon>=-100&&lon<=-6) return 'Atlantic Ocean';
+  return 'At sea';
+}
+function parsePlanEta(s){
+  if(!s) return null;
+  const m=String(s).trim().match(/^(\d{1,2})[-\s]([A-Za-z]{3})/);
+  if(!m) return null;
+  const months={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const mo=months[m[2].toLowerCase()]; if(mo==null) return null;
+  const now=new Date();
+  let d=new Date(now.getFullYear(),mo,parseInt(m[1],10));
+  if(d.getTime()<now.getTime()-1000*3600*24*183) d.setFullYear(d.getFullYear()+1);
+  return d;
+}
+function destIsJeddah(dest){ return /JED|JIDDAH|JEDDAH/.test(String(dest||'').toUpperCase()); }
+function liveEtaDate(t){
+  const d=t.data;
+  if(d&&d.lat!=null&&d.sog>1) return new Date(Date.now()+routedNm({lat:d.lat,lon:d.lon})/d.sog*3600*1000);
+  return null;
+}
+function etaText(t){
+  const d=t.data; if(!d) return '';
+  const le=liveEtaDate(t);
+  if(le) return le.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  if(d.aisEta) return d.aisEta.Day+' '+['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.aisEta.Month]+' (crew)';
+  return '';
+}
+function varianceText(t){
+  const le=liveEtaDate(t), plan=parsePlanEta(t.plannedEta);
+  if(!le||!plan) return '';
+  const days=Math.round((le-plan)/(1000*3600*24));
+  if(days===0) return 'on plan';
+  return days>0?('+'+days+'d vs plan'):(days+'d vs plan');
+}
+function ageText(t){
+  if(!t.data||!t.data.time) return '';
+  const min=Math.floor((Date.now()-t.data.time)/60000);
+  if(min<1) return 'just now';
+  if(min<60) return min+' min ago';
+  return Math.floor(min/60)+'h '+(min%60)+'m ago';
+}
+function fmtCount(n){ return n>=1000?(n/1000).toFixed(1)+'k':String(n); }
+
+function initMap(){
+  map=L.map('map').setView([18,55],3);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap',maxZoom:18}).addTo(map);
+  L.circleMarker([JEDDAH.lat,JEDDAH.lon],{radius:7,color:'#0b1f3f',fillColor:'#1351d8',fillOpacity:.9})
+    .bindPopup('<b>Jeddah Islamic Port</b><br>Destination').addTo(map);
+}
+function setMsg(text,type,sticky){
+  const m=document.getElementById('msg');
+  m.textContent=text; m.className='msg show '+type;
+  clearTimeout(m._t);
+  if(!sticky) m._t=setTimeout(()=>m.className='msg',6000);
+}
+function setConn(state,text){
+  document.getElementById('connDot').className='dot '+state;
+  document.getElementById('connText').textContent=text;
+}
+
+async function poll(manual){
+  try{
+    const r=await fetch('/api/fleet',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    fleet=j.fleet||[];
+    const s=j.stream||{};
+    document.getElementById('stMsgs').textContent=fmtCount(s.msgCount||0);
+    if(s.connected) setConn('live','Live');
+    else if(s.lastError) setConn('err','Stream issue');
+    else setConn('','Reconnecting...');
+    if(s.lastError) setMsg('Live data note: '+s.lastError+' (aisstream.io is a beta service; the relay reconnects automatically).','bad',true);
+    else document.getElementById('msg').className='msg';
+    render();
+    if(manual) setMsg('Refreshed.','ok');
+  }catch(e){
+    setConn('err','Relay offline');
+    if(manual) setMsg('Could not reach the tracker service ('+e.message+').','bad');
+  }
+}
+
+function render(){
+  document.getElementById('stTargets').textContent=fleet.length;
+  document.getElementById('stLive').textContent=fleet.filter(t=>t.data&&t.data.lat!=null).length;
+  const el=document.getElementById('vlist');
+  if(fleet.length===0){ el.innerHTML='<div style="font-size:12px;color:var(--muted)">No vessels in the arrivals sheet.</div>'; return; }
+  const order=fleet.map((t,i)=>({t,i})).sort((a,b)=>((b.t.data&&b.t.data.lat!=null)?1:0)-((a.t.data&&a.t.data.lat!=null)?1:0));
+
+  Object.keys(markers).forEach(k=>{ if(!fleet.some(t=>t.raw===k&&t.data&&t.data.lat!=null)){ map.removeLayer(markers[k]); delete markers[k]; } });
+
+  el.innerHTML=order.map(({t,i})=>{
+    const d=t.data;
+    const liveNow=d&&d.lat!=null;
+    const planBits=[];
+    if(t.origin) planBits.push(t.origin);
+    if(t.plannedEta) planBits.push('Plan ETA '+t.plannedEta);
+    if(t.qty) planBits.push(t.qty+' units');
+    if(t.adhoc) planBits.push('added manually');
+    const plan=planBits.length?('<div class="upd">'+planBits.join(' · ')+'</div>'):'';
+    if(liveNow){
+      updateMarker(t);
+      const nm=Math.round(routedNm({lat:d.lat,lon:d.lon}));
+      const vtxt=varianceText(t);
+      const stale=(Date.now()-d.time)>45*60000;
+      let destHtml='?';
+      if(d.dest) destHtml=destIsJeddah(d.dest)
+        ? '<span style="color:var(--green)">'+d.dest+'</span>'
+        : '<span style="color:var(--amber)" title="Reported destination is not Jeddah">'+d.dest+' ⚠</span>';
+      return '<div class="vcard live" onclick="focusVessel('+i+')" style="'+(stale?'opacity:.65':'')+'">'
+        +'<div class="top"><span class="vname">'+t.raw+'</span><span class="badge b-live">'+regionName(d.lat,d.lon)+'</span></div>'
+        +plan
+        +'<div class="grid">'
+        +'<span>Speed <b>'+(d.sog!=null?d.sog.toFixed(1)+' kn':'?')+'</b></span>'
+        +'<span>To Jeddah <b>'+nm.toLocaleString()+' nm</b></span>'
+        +'<span>Live ETA <b>'+(etaText(t)||'?')+'</b></span>'
+        +'<span>Vs plan <b>'+(vtxt||'?')+'</b></span>'
+        +'<span style="grid-column:1/-1">Dest <b>'+destHtml+'</b></span>'
+        +'</div>'
+        +'<div class="upd">Signal '+ageText(t)+(d.mmsi?(' · MMSI '+d.mmsi):'')+(stale?' · signal aging':'')+'</div>'
+        +'</div>';
+    }
+    return '<div class="vcard"><div class="top"><span class="vname">'+t.raw+'</span><span class="badge b-wait">Listening</span></div>'
+      +plan
+      +'<div class="upd">No signal yet. Appears when the vessel is within coastal receiver range.</div></div>';
+  }).join('');
+}
+
+function updateMarker(t){
+  const d=t.data, pos=[d.lat,d.lon];
+  const nm=routedNm({lat:d.lat,lon:d.lon});
+  const vtxt=varianceText(t);
+  const popup='<b>'+t.raw+'</b><br>'
+    +regionName(d.lat,d.lon)+'<br>'
+    +(d.mmsi?('MMSI '+d.mmsi+'<br>'):'')
+    +'Speed '+(d.sog!=null?d.sog.toFixed(1):'?')+' kn<br>'
+    +Math.round(nm).toLocaleString()+' nm to Jeddah'
+    +(etaText(t)?('<br>Live ETA '+etaText(t)+(vtxt?(' ('+vtxt+')'):'')):'')
+    +(d.dest?('<br>Reported dest: '+d.dest):'');
+  if(!markers[t.raw]){
+    const icon=L.divIcon({className:'ship-icon',html:'<div>&#9972;</div>',iconSize:[26,26],iconAnchor:[13,13]});
+    markers[t.raw]=L.marker(pos,{icon}).bindPopup(popup).addTo(map);
+  } else { markers[t.raw].setLatLng(pos); markers[t.raw].setPopupContent(popup); }
+}
+
+function focusVessel(i){
+  const t=fleet[i];
+  if(t&&markers[t.raw]){ map.setView(markers[t.raw].getLatLng(),7); markers[t.raw].openPopup(); }
+}
+
+async function addVessel(){
+  const inp=document.getElementById('addName');
+  const name=inp.value.trim();
+  if(!name) return;
+  try{
+    const r=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    const j=await r.json();
+    if(!r.ok){ setMsg(j.error||'Could not add vessel.','bad'); return; }
+    inp.value='';
+    setMsg('Now listening for '+name.toUpperCase()+'.','ok');
+    poll();
+  }catch(e){ setMsg('Could not reach the tracker service.','bad'); }
+}
+
+window.addEventListener('DOMContentLoaded',()=>{
+  initMap();
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  poll();
+  setInterval(poll,30000);
+  setInterval(render,60000);
 });
+</script>
+</body>
+</html>
