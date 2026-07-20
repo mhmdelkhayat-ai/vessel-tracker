@@ -57,7 +57,7 @@ function parseSheet(text) {
 
 async function syncSheet() {
   try {
-    const r = await fetch(https://docs.google.com/spreadsheets/d/e/2PACX-1vTWkaAuL6kb0stuM94ldwa3Evegttmqz92-uZlYTqFLtkFkDYuuQNrKjT21yITle90mDTsiZkkkfo3D/pubhtml, { cache: 'no-store' });
+    const r = await fetch(SHEET_URL, { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const rows = parseSheet(await r.text());
     const byNorm = {}; for (const t of targets) byNorm[t.norm] = t;
@@ -91,9 +91,9 @@ function matchTarget(aisName) {
 let ws = null, retryDelay = 5000;
 
 function connect() {
-  ws = new WebSocket(wss://stream.aisstream.io/v0/stream);
+  ws = new WebSocket(WS_URL);
   ws.on('open', () => {
-    ws.send(JSON.stringify({ APIKey: c2327c4dcb3a85de1c18148ba13c519ae64dcc33, BoundingBoxes: BOXES, FilterMessageTypes: ['PositionReport', 'ShipStaticData'] }));
+    ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: BOXES, FilterMessageTypes: ['PositionReport', 'ShipStaticData'] }));
     stream.connected = true; stream.lastError = null; retryDelay = 5000;
     console.log('[ais] connected and subscribed');
   });
