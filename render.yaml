@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ford-naghi-vessel-tracker
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start

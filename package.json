@@ -1,0 +1,16 @@
+{
+  "name": "ford-naghi-vessel-tracker",
+  "version": "1.0.0",
+  "description": "Live AIS vessel tracking relay for MYNM Ford operations",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  }
+}
