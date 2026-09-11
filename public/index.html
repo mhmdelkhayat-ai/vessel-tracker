@@ -1,6 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
+<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Ford Naghi Vessel Tracker</title>
@@ -40,6 +38,9 @@
   .fleet-head h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
   .refresh{background:none;border:none;color:var(--ford);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;font-family:inherit;padding:4px 6px;border-radius:6px}
   .refresh:hover{background:#eef3fd}
+  .refresh svg{width:13px;height:13px}
+  .refresh.spin svg{animation:rot 1s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
   .msg{padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:12px;line-height:1.55;display:none}
   .msg.show{display:block}
   .msg.ok{background:var(--green-bg);color:var(--green)}
@@ -94,40 +95,56 @@
 
     <div class="fleet-head">
       <h2>Inbound fleet</h2>
-      <button class="refresh" onclick="poll(true)" title="Refresh now">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-        Refresh
+      <button class="refresh" id="refreshBtn" onclick="refreshSheet()" title="Reload vessel list from the arrivals sheet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"></path></svg>
+        Sync sheet
       </button>
     </div>
 
     <div class="vlist" id="vlist">
-      <div style="font-size:12px;color:var(--muted)">Loading fleet...</div>
+      <div style="font-size:12px;color:var(--muted)">Loading fleet from the arrivals sheet...</div>
     </div>
 
     <div class="addrow">
-      <input type="text" id="addName" placeholder="Track an extra vessel by name" onkeydown="if(event.key==='Enter')addVessel()">
+      <input type="text" id="addMmsi" inputmode="numeric" maxlength="9" placeholder="Track an extra vessel by MMSI" onkeydown="if(event.key==='Enter')addVessel()">
       <button onclick="addVessel()">Add</button>
     </div>
 
-    <footer class="creds">Fleet list: MYNM arrivals sheet · Positions: aisstream.io · Nothing is stored</footer>
+    <footer class="creds">Fleet list: MYNM arrivals sheet · Matching: MMSI · Positions: aisstream.io · Nothing is stored</footer>
   </div>
   <div id="map"></div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
-const JEDDAH={lat:21.47,lon:39.17}, BAB={lat:12.6,lon:43.4}, SUEZ={lat:29.9,lon:32.55}, GIB={lat:35.95,lon:-5.6};
-let map, fleet=[], markers={};
-
+const SHEET_URL='https://docs.google.com/spreadsheets/d/e/2PACX-1vTWkaAuL6kb0stuM94ldwa3Evegttmqz92-uZlYTqFLtkFkDYuuQNrKjT21yITle90mDTsiZkkkfo3D/pub?output=csv';
+const API_KEY='c2327c4dcb3a85de1c18148ba13c519ae64dcc33';
+const WS_URL="wss://stream.aisstream.io/v0/stream";
+const JEDDAH = {lat: 21.47, lon: 39.17};
+const BAB = {lat: 12.6, lon: 43.4};
+const SUEZ = {lat: 29.9, lon: 32.55};
+const GIB = {lat: 35.95, lon: -5.6};
+const BOXES = [
+  [[ 5, 98],[45,140]],
+  [[-15, 44],[30, 98]],
+  [[ 10, 31],[33, 52]],
+  [[ 30, -7],[46, 37]],
+  [[  5,-100],[50,-40]],
+  [[  0,-45],[45,  0]],
+  [[-40, 10],[ 5, 55]]
+];
+let map, ws=null, msgCount=0, targets=[], fleetWarnings=[], retryTimer=null, retryDelay=6000;
 function haversineNm(a,b){
-  const R=3440.065,toR=Math.PI/180;
-  const dLat=(b.lat-a.lat)*toR,dLon=(b.lon-a.lon)*toR;
+  const R=3440.065, toR=Math.PI/180;
+  const dLat=(b.lat-a.lat)*toR, dLon=(b.lon-a.lon)*toR;
   const h=Math.sin(dLat/2)**2+Math.cos(a.lat*toR)*Math.cos(b.lat*toR)*Math.sin(dLon/2)**2;
   return 2*R*Math.asin(Math.sqrt(h));
 }
 function routedNm(p){
-  if(p.lat>=12&&p.lat<=30.5&&p.lon>=32&&p.lon<=44) return haversineNm(p,JEDDAH);
-  if(p.lat>=30&&p.lat<=46&&p.lon>=-6&&p.lon<=36) return haversineNm(p,SUEZ)+haversineNm(SUEZ,JEDDAH);
+  const inRedSea = p.lat>=12 && p.lat<=30.5 && p.lon>=32 && p.lon<=44;
+  if(inRedSea) return haversineNm(p,JEDDAH);
+  const inMed = p.lat>=30 && p.lat<=46 && p.lon>=-6 && p.lon<=36;
+  if(inMed) return haversineNm(p,SUEZ)+haversineNm(SUEZ,JEDDAH);
   if(p.lon<-6) return haversineNm(p,GIB)+haversineNm(GIB,SUEZ)+haversineNm(SUEZ,JEDDAH);
   return haversineNm(p,BAB)+haversineNm(BAB,JEDDAH);
 }
@@ -146,50 +163,32 @@ function regionName(lat,lon){
   if(lon>=-100&&lon<=-6) return 'Atlantic Ocean';
   return 'At sea';
 }
-function parsePlanEta(s){
-  if(!s) return null;
-  const m=String(s).trim().match(/^(\d{1,2})[-\s]([A-Za-z]{3})/);
-  if(!m) return null;
-  const months={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-  const mo=months[m[2].toLowerCase()]; if(mo==null) return null;
-  const now=new Date();
-  let d=new Date(now.getFullYear(),mo,parseInt(m[1],10));
-  if(d.getTime()<now.getTime()-1000*3600*24*183) d.setFullYear(d.getFullYear()+1);
-  return d;
+function splitCsvLine(line){
+  const cells=[]; let cur='', q=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(q){ if(ch==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+    else { if(ch==='"') q=true; else if(ch===','){ cells.push(cur); cur=''; } else cur+=ch; }
+  }
+  cells.push(cur);
+  return cells.map(c=>c.trim());
 }
-function destIsJeddah(dest){ return /JED|JIDDAH|JEDDAH/.test(String(dest||'').toUpperCase()); }
-function liveEtaDate(t){
-  const d=t.data;
-  if(d&&d.lat!=null&&d.sog>1) return new Date(Date.now()+routedNm({lat:d.lat,lon:d.lon})/d.sog*3600*1000);
-  return null;
+function parseSheet(text){
+  const rows=[];
+  for(const raw of text.split(/\r?\n/)){
+    if(!raw.trim()) continue;
+    const c=splitCsvLine(raw);
+    const name=(c[0]||'').trim();
+    if(!name||/^vessel\s*name$/i.test(name)||/^total$/i.test(name)) continue;
+    const mmsi=String(c[2]||'').replace(/\D/g,'');
+    rows.push({name,origin:(c[1]||'').trim(),mmsi});
+  }
+  return rows;
 }
-function etaText(t){
-  const d=t.data; if(!d) return '';
-  const le=liveEtaDate(t);
-  if(le) return le.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-  if(d.aisEta) return d.aisEta.Day+' '+['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.aisEta.Month]+' (crew)';
-  return '';
-}
-function varianceText(t){
-  const le=liveEtaDate(t), plan=parsePlanEta(t.plannedEta);
-  if(!le||!plan) return '';
-  const days=Math.round((le-plan)/(1000*3600*24));
-  if(days===0) return 'on plan';
-  return days>0?('+'+days+'d vs plan'):(days+'d vs plan');
-}
-function ageText(t){
-  if(!t.data||!t.data.time) return '';
-  const min=Math.floor((Date.now()-t.data.time)/60000);
-  if(min<1) return 'just now';
-  if(min<60) return min+' min ago';
-  return Math.floor(min/60)+'h '+(min%60)+'m ago';
-}
-function fmtCount(n){ return n>=1000?(n/1000).toFixed(1)+'k':String(n); }
-
 function initMap(){
-  map=L.map('map').setView([18,55],3);
+  map = L.map('map').setView([18, 55], 3);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap',maxZoom:18}).addTo(map);
-  L.circleMarker([JEDDAH.lat,JEDDAH.lon],{radius:7,color:'#0b1f3f',fillColor:'#1351d8',fillOpacity:.9})
+  L.circleMarker([JEDDAH.lat, JEDDAH.lon],{radius:7,color:'#0b1f3f',fillColor:'#1351d8',fillOpacity:.9})
     .bindPopup('<b>Jeddah Islamic Port</b><br>Destination').addTo(map);
 }
 function setMsg(text,type,sticky){
@@ -202,117 +201,200 @@ function setConn(state,text){
   document.getElementById('connDot').className='dot '+state;
   document.getElementById('connText').textContent=text;
 }
-
-async function poll(manual){
-  try{
-    const r=await fetch('/api/fleet',{cache:'no-store'});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const j=await r.json();
-    fleet=j.fleet||[];
-    const s=j.stream||{};
-    document.getElementById('stMsgs').textContent=fmtCount(s.msgCount||0);
-    if(s.connected) setConn('live','Live');
-    else if(s.lastError) setConn('err','Stream issue');
-    else setConn('','Reconnecting...');
-    if(s.lastError) setMsg('Live data note: '+s.lastError+' (aisstream.io is a beta service; the relay reconnects automatically).','bad',true);
-    else document.getElementById('msg').className='msg';
-    render();
-    if(manual) setMsg('Refreshed.','ok');
-  }catch(e){
-    setConn('err','Relay offline');
-    if(manual) setMsg('Could not reach the tracker service ('+e.message+').','bad');
-  }
+async function decodeWsMessage(data){
+  if(typeof data==='string') return JSON.parse(data);
+  if(data instanceof Blob) return JSON.parse(await data.text());
+  if(data instanceof ArrayBuffer) return JSON.parse(new TextDecoder('utf-8').decode(data));
+  if(ArrayBuffer.isView(data)) return JSON.parse(new TextDecoder('utf-8').decode(data));
+  throw new Error('Unsupported format');
 }
-
-function render(){
-  document.getElementById('stTargets').textContent=fleet.length;
-  document.getElementById('stLive').textContent=fleet.filter(t=>t.data&&t.data.lat!=null).length;
+async function fetchFleet(){
+  const r=await fetch(SHEET_URL,{cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return parseSheet(await r.text());
+}
+function mergeFleet(rows){
+  const byMmsi={}; for(const t of targets) if(t.mmsi) byMmsi[t.mmsi]=t;
+  const next=[]; const seenMmsi=new Set();
+  fleetWarnings=[];
+  for(const row of rows){
+    const mmsi=String(row.mmsi||'');
+    if(!/^\d{9}$/.test(mmsi)){
+      fleetWarnings.push(row.name+': invalid MMSI');
+      continue;
+    }
+    if(seenMmsi.has(mmsi)){
+      fleetWarnings.push(row.name+': duplicate MMSI '+mmsi);
+      continue;
+    }
+    seenMmsi.add(mmsi);
+    const prev=byMmsi[mmsi];
+    if(prev){ prev.raw=row.name; prev.origin=row.origin; next.push(prev); }
+    else next.push({raw:row.name,mmsi,origin:row.origin,live:false,marker:null,data:null,adhoc:false});
+  }
+  for(const t of targets) if(t.adhoc&&!seenMmsi.has(t.mmsi)) { seenMmsi.add(t.mmsi); next.push(t); }
+  for(const t of targets) if(!next.includes(t)&&t.marker){ map.removeLayer(t.marker); }
+  targets=next;
+}
+async function refreshSheet(){
+  const btn=document.getElementById('refreshBtn');
+  btn.classList.add('spin');
+  try{
+    mergeFleet(await fetchFleet());
+    renderList();
+    sendSubscription();
+    const msg='Fleet synced: '+targets.filter(t=>!t.adhoc).length+' valid vessels'+(fleetWarnings.length?' (skipped: '+fleetWarnings.join('; ')+')':'');
+    setMsg(msg,fleetWarnings.length?'bad':'ok',fleetWarnings.length>0);
+  }catch(e){
+    setMsg('Could not reach the arrivals sheet ('+e.message+').','bad');
+  }
+  btn.classList.remove('spin');
+}
+function addVessel(){
+  const inp=document.getElementById('addMmsi');
+  const mmsi=inp.value.replace(/\D/g,'');
+  if(!mmsi) return;
+  if(!/^\d{9}$/.test(mmsi)){ setMsg('MMSI must be exactly 9 digits.','bad'); return; }
+  if(targets.some(t=>t.mmsi===mmsi)){ setMsg('MMSI '+mmsi+' is already tracked.','bad'); inp.value=''; return; }
+  targets.push({raw:'MMSI '+mmsi,mmsi,origin:'',live:false,marker:null,data:null,adhoc:true});
+  inp.value='';
+  renderList();
+  sendSubscription();
+  setMsg('Listening for MMSI '+mmsi+'.','ok');
+}
+function matchTarget(meta){
+  const mmsi=String(meta&&meta.MMSI||'');
+  return targets.find(t=>t.mmsi===mmsi)||null;
+}
+function sendSubscription(){
+  if(!ws||ws.readyState!==WebSocket.OPEN) return;
+  const filters=[...new Set(targets.map(t=>t.mmsi).filter(m=>/^\d{9}$/.test(m)))];
+  const sub={APIKey:API_KEY,BoundingBoxes:BOXES,FilterMessageTypes:["PositionReport","ShipStaticData"]};
+  if(filters.length) sub.FiltersShipMMSI=filters.slice(0,200);
+  ws.send(JSON.stringify(sub));
+  setConn('','Confirming...');
+}
+function connect(){
+  if(ws) try{ws.close()}catch(e){}
+  setConn('','Connecting...');
+  ws=new WebSocket(WS_URL);
+  ws.binaryType='arraybuffer';
+  ws.onopen=()=>sendSubscription();
+  ws.onmessage=async ev=>{
+    let m;
+    try{ m=await decodeWsMessage(ev.data); }catch(e){
+      setConn('err','Decode error');
+      setMsg('Message decode failed: '+e.message,'bad');
+      return;
+    }
+    if(m.MessageType==='SubscriptionConfirmation'){
+      retryDelay=6000;
+      setConn('live','Live');
+      setMsg('Subscription confirmed. Listening for matching vessels.','ok');
+      return;
+    }
+    const err=m.error||m.Error||m.Message?.Error;
+    if(err){
+      setConn('err','Stream error');
+      setMsg('AIS stream error: "'+err+'". Will retry automatically.','bad',true);
+      return;
+    }
+    msgCount++; retryDelay=6000;
+    if(msgCount%50===0) document.getElementById('stMsgs').textContent=(msgCount/1000).toFixed(1)+'k';
+    const meta=m.MetaData; if(!meta||meta.MMSI==null) return;
+    const t=matchTarget(meta); if(!t) return;
+    if(!t.data) t.data={};
+    t.data.mmsi=meta.MMSI;
+    if(meta.ShipName){
+      t.data.aisName=String(meta.ShipName).trim();
+      if(t.adhoc&&t.raw.startsWith('MMSI ')){ t.raw=t.data.aisName; }
+    }
+    t.data.time=new Date(meta.time_utc||meta.TimeUTC||Date.now());
+    if(m.MessageType==="PositionReport"&&m.Message?.PositionReport){
+      const p=m.Message.PositionReport;
+      t.data.lat=p.Latitude??meta.Latitude;
+      t.data.lon=p.Longitude??meta.Longitude;
+      t.data.sog=p.Sog;
+    } else if(meta.Latitude!=null){
+      t.data.lat=t.data.lat??meta.Latitude; t.data.lon=t.data.lon??meta.Longitude;
+    }
+    if(m.MessageType==="ShipStaticData"&&m.Message?.ShipStaticData){
+      const s=m.Message.ShipStaticData;
+      t.data.dest=(s.Destination||'').trim();
+    }
+    if(t.data.lat!=null){
+      if(!t.live){ t.live=true; document.getElementById('stLive').textContent=targets.filter(x=>x.live).length; }
+      updateMarker(t);
+    }
+    renderList();
+  };
+  ws.onclose=e=>{
+    const why=e.code&&e.code!==1000?(' code '+e.code):'';
+    if(msgCount===0){
+      setConn('err','Rejected'+why);
+      setMsg('Subscription rejected. Check the MMSI list and retry.','bad',true);
+    } else {
+      setConn('','Reconnecting...');
+    }
+    retryTimer=setTimeout(connect,retryDelay);
+    retryDelay=Math.min(retryDelay*2,60000);
+  };
+  ws.onerror=()=>setConn('err','Error');
+}
+function ageText(t){
+  if(!t.data||!t.data.time) return '';
+  const min=Math.floor((Date.now()-t.data.time.getTime())/60000);
+  if(min<1) return 'just now';
+  if(min<60) return min+'m ago';
+  return Math.floor(min/60)+'h ago';
+}
+function updateMarker(t){
+  const d=t.data, pos=[d.lat,d.lon];
+  const nm=Math.round(routedNm({lat:d.lat,lon:d.lon}));
+  const popup='<b>'+t.raw+'</b><br>'+regionName(d.lat,d.lon)+'<br>MMSI '+d.mmsi+'<br>Speed '+(d.sog||'?')+' kn<br>'+nm.toLocaleString()+' nm to Jeddah';
+  if(!t.marker){
+    const icon=L.divIcon({className:'ship-icon',html:'<div>&#9972;</div>',iconSize:[26,26],iconAnchor:[13,13]});
+    t.marker=L.marker(pos,{icon}).bindPopup(popup).addTo(map);
+    if(targets.filter(x=>x.live).length===1) map.setView(pos,5);
+  } else { t.marker.setLatLng(pos); t.marker.setPopupContent(popup); }
+}
+function renderList(){
+  document.getElementById('stTargets').textContent=targets.length;
   const el=document.getElementById('vlist');
-  if(fleet.length===0){ el.innerHTML='<div style="font-size:12px;color:var(--muted)">No vessels in the arrivals sheet.</div>'; return; }
-  const order=fleet.map((t,i)=>({t,i})).sort((a,b)=>((b.t.data&&b.t.data.lat!=null)?1:0)-((a.t.data&&a.t.data.lat!=null)?1:0));
-
-  Object.keys(markers).forEach(k=>{ if(!fleet.some(t=>t.raw===k&&t.data&&t.data.lat!=null)){ map.removeLayer(markers[k]); delete markers[k]; } });
-
+  if(!targets.length){ el.innerHTML='<div style="font-size:12px;color:var(--muted)">No vessels in the arrivals sheet.</div>'; return; }
+  const order=targets.map((t,i)=>({t,i})).sort((a,b)=>(b.t.live?1:0)-(a.t.live?1:0));
   el.innerHTML=order.map(({t,i})=>{
     const d=t.data;
-    const liveNow=d&&d.lat!=null;
-    const planBits=[];
-    if(t.origin) planBits.push(t.origin);
-    if(t.plannedEta) planBits.push('Plan ETA '+t.plannedEta);
-    if(t.qty) planBits.push(t.qty+' units');
-    if(t.adhoc) planBits.push('added manually');
-    const plan=planBits.length?('<div class="upd">'+planBits.join(' · ')+'</div>'):'';
-    if(liveNow){
-      updateMarker(t);
+    if(t.live&&d){
       const nm=Math.round(routedNm({lat:d.lat,lon:d.lon}));
-      const vtxt=varianceText(t);
-      const stale=(Date.now()-d.time)>45*60000;
-      let destHtml='?';
-      if(d.dest) destHtml=destIsJeddah(d.dest)
-        ? '<span style="color:var(--green)">'+d.dest+'</span>'
-        : '<span style="color:var(--amber)" title="Reported destination is not Jeddah">'+d.dest+' ⚠</span>';
+      const stale=(Date.now()-d.time.getTime())>45*60000;
       return '<div class="vcard live" onclick="focusVessel('+i+')" style="'+(stale?'opacity:.65':'')+'">'
         +'<div class="top"><span class="vname">'+t.raw+'</span><span class="badge b-live">'+regionName(d.lat,d.lon)+'</span></div>'
-        +plan
+        +(t.origin?'<div class="upd">'+t.origin+'</div>':'')
         +'<div class="grid">'
         +'<span>Speed <b>'+(d.sog!=null?d.sog.toFixed(1)+' kn':'?')+'</b></span>'
         +'<span>To Jeddah <b>'+nm.toLocaleString()+' nm</b></span>'
-        +'<span>Live ETA <b>'+(etaText(t)||'?')+'</b></span>'
-        +'<span>Vs plan <b>'+(vtxt||'?')+'</b></span>'
-        +'<span style="grid-column:1/-1">Dest <b>'+destHtml+'</b></span>'
         +'</div>'
-        +'<div class="upd">Signal '+ageText(t)+(d.mmsi?(' · MMSI '+d.mmsi):'')+(stale?' · signal aging':'')+'</div>'
+        +'<div class="upd">Signal '+ageText(t)+(stale?' · aging':'')+'</div>'
         +'</div>';
     }
     return '<div class="vcard"><div class="top"><span class="vname">'+t.raw+'</span><span class="badge b-wait">Listening</span></div>'
-      +plan
-      +'<div class="upd">No signal yet. Appears when the vessel is within coastal receiver range.</div></div>';
+      +(t.origin?'<div class="upd">'+t.origin+'</div>':'')
+      +'<div class="upd">MMSI '+t.mmsi+' · No signal yet.</div></div>';
   }).join('');
 }
-
-function updateMarker(t){
-  const d=t.data, pos=[d.lat,d.lon];
-  const nm=routedNm({lat:d.lat,lon:d.lon});
-  const vtxt=varianceText(t);
-  const popup='<b>'+t.raw+'</b><br>'
-    +regionName(d.lat,d.lon)+'<br>'
-    +(d.mmsi?('MMSI '+d.mmsi+'<br>'):'')
-    +'Speed '+(d.sog!=null?d.sog.toFixed(1):'?')+' kn<br>'
-    +Math.round(nm).toLocaleString()+' nm to Jeddah'
-    +(etaText(t)?('<br>Live ETA '+etaText(t)+(vtxt?(' ('+vtxt+')'):'')):'')
-    +(d.dest?('<br>Reported dest: '+d.dest):'');
-  if(!markers[t.raw]){
-    const icon=L.divIcon({className:'ship-icon',html:'<div>&#9972;</div>',iconSize:[26,26],iconAnchor:[13,13]});
-    markers[t.raw]=L.marker(pos,{icon}).bindPopup(popup).addTo(map);
-  } else { markers[t.raw].setLatLng(pos); markers[t.raw].setPopupContent(popup); }
-}
-
 function focusVessel(i){
-  const t=fleet[i];
-  if(t&&markers[t.raw]){ map.setView(markers[t.raw].getLatLng(),7); markers[t.raw].openPopup(); }
+  const t=targets[i];
+  if(t&&t.marker){ map.setView(t.marker.getLatLng(),7); t.marker.openPopup(); }
 }
-
-async function addVessel(){
-  const inp=document.getElementById('addName');
-  const name=inp.value.trim();
-  if(!name) return;
-  try{
-    const r=await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
-    const j=await r.json();
-    if(!r.ok){ setMsg(j.error||'Could not add vessel.','bad'); return; }
-    inp.value='';
-    setMsg('Now listening for '+name.toUpperCase()+'.','ok');
-    poll();
-  }catch(e){ setMsg('Could not reach the tracker service.','bad'); }
-}
-
-window.addEventListener('DOMContentLoaded',()=>{
+window.addEventListener('DOMContentLoaded',async()=>{
   initMap();
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-  poll();
-  setInterval(poll,30000);
-  setInterval(render,60000);
+  try{ mergeFleet(await fetchFleet()); renderList(); if(fleetWarnings.length) setMsg('Skipped: '+fleetWarnings.join('; ')+'','bad',true); }
+  catch(e){ setMsg('Could not load the arrivals sheet ('+e.message+').','bad',true); }
+  connect();
+  setInterval(()=>{ if(targets.some(t=>t.live)) renderList(); },60000);
+  setInterval(refreshSheet,30*60000);
 });
 </script>
-</body>
-</html>
+</body></html>
